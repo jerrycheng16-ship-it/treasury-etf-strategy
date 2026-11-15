@@ -202,4 +202,114 @@ fig_eq.add_trace(go.Scatter(
 fig_eq.add_trace(go.Scatter(
     x=df_bt.index, y=df_bt["BM_Equity"],
     mode="lines", name="Benchmark (Buy & Hold TLT)",
-    line=
+    line=dict(color="#7f7f7f", width=2, dash="dash")
+))
+add_range_shading(fig_eq, df_bt)
+fig_eq.update_layout(
+    hovermode="x unified",
+    yaxis_title="累積淨值",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    height=420
+)
+st.plotly_chart(fig_eq, use_container_width=True)
+
+# --- 3. 歷史回撤走勢圖 ---
+st.subheader("2️⃣ 歷史回撤走勢圖 (Drawdown)")
+fig_dd = go.Figure()
+fig_dd.add_trace(go.Scatter(
+    x=df_bt.index, y=df_bt["Strategy_DD"] * 100,
+    mode="lines", name="策略回撤 (%)",
+    fill="tozeroy", line=dict(color="#d62728", width=1.8)
+))
+fig_dd.add_trace(go.Scatter(
+    x=df_bt.index, y=df_bt["BM_DD"] * 100,
+    mode="lines", name="TLT 回撤 (%)",
+    line=dict(color="#555555", width=1.5, dash="dot")
+))
+fig_dd.update_layout(
+    hovermode="x unified",
+    yaxis_title="回撤幅度 (%)",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    height=380
+)
+st.plotly_chart(fig_dd, use_container_width=True)
+
+# --- 4. 市場狀態判定圖：趨勢盤 vs 盤整盤 ---
+st.subheader("3️⃣ 市場狀態判定圖：趨勢盤 vs 盤整盤 (|US2Y - EFFR|)")
+fig_regime = go.Figure()
+
+# 利差絕對值曲線
+fig_regime.add_trace(go.Scatter(
+    x=df_bt.index, y=df_bt["Rate_Spread"],
+    mode="lines", name="|US2Y - EFFR| 利差 (%)",
+    line=dict(color="#9467bd", width=2),
+    fill="tozeroy", fillcolor="rgba(148, 103, 189, 0.15)"
+))
+
+# 趨勢盤高亮標記點（綠色圓點）
+trend_df = df_bt[df_bt["Is_Trend"]]
+fig_regime.add_trace(go.Scatter(
+    x=trend_df.index, y=trend_df["Rate_Spread"],
+    mode="markers", name="趨勢盤 (啟動均線輪動)",
+    marker=dict(color="#2ca02c", size=6)
+))
+
+# 盤整盤標記點（灰色圓點）
+range_df = df_bt[~df_bt["Is_Trend"]]
+fig_regime.add_trace(go.Scatter(
+    x=range_df.index, y=range_df["Rate_Spread"],
+    mode="markers", name="盤整盤 (暫停輪動)",
+    marker=dict(color="#8c8c8c", size=5)
+))
+
+# 門檻水平線
+fig_regime.add_hline(
+    y=spread_threshold, line_dash="dash", line_color="#d62728", line_width=2,
+    annotation_text=f"趨勢門檻 {spread_threshold:.2f}%", annotation_position="top left"
+)
+
+fig_regime.update_layout(
+    hovermode="x unified",
+    yaxis_title="利差絕對值 (%)",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    height=400
+)
+st.plotly_chart(fig_regime, use_container_width=True)
+
+# --- 5. TLT/TBF 比率與均線走勢圖 ---
+st.subheader(f"4️⃣ TLT / TBF 價格比率與 {ma_window} 個月移動平均線走勢圖")
+fig_ratio = go.Figure()
+fig_ratio.add_trace(go.Scatter(
+    x=df_bt.index, y=df_bt["Ratio"],
+    mode="lines", name="TLT / TBF 比率",
+    line=dict(color="#17becf", width=2.2)
+))
+fig_ratio.add_trace(go.Scatter(
+    x=df_bt.index, y=df_bt["Ratio_MA"],
+    mode="lines", name=f"{ma_window} 個月均線 ({ma_window}M SMA)",
+    line=dict(color="#ff7f0e", width=2)
+))
+
+# 標示比率站上/跌破均線的轉折點
+cross_up = df_bt[(df_bt["Ratio"] > df_bt["Ratio_MA"]) & (df_bt["Ratio"].shift(1) <= df_bt["Ratio_MA"].shift(1))]
+cross_down = df_bt[(df_bt["Ratio"] < df_bt["Ratio_MA"]) & (df_bt["Ratio"].shift(1) >= df_bt["Ratio_MA"].shift(1))]
+
+fig_ratio.add_trace(go.Scatter(
+    x=cross_up.index, y=cross_up["Ratio"],
+    mode="markers", name="突破均線 (偏多 TLT)",
+    marker=dict(symbol="triangle-up", size=10, color="#2ca02c")
+))
+fig_ratio.add_trace(go.Scatter(
+    x=cross_down.index, y=cross_down["Ratio"],
+    mode="markers", name="跌破均線 (偏空 TBF)",
+    marker=dict(symbol="triangle-down", size=10, color="#d62728")
+))
+
+add_range_shading(fig_ratio, df_bt)
+fig_ratio.update_layout(
+    hovermode="x unified",
+    yaxis_title="價格比率 (TLT / TBF)",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    height=420
+)
+st.plotly_chart(fig_ratio, use_container_width=True)
