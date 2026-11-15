@@ -3,11 +3,60 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import hmac
 from datetime import datetime
 
-# 頁面基本設定
+# 頁面基本設定（必須放在所有 st 指令最前面）
 st.set_page_config(page_title="美債 ETF 多模式均線與宏觀濾網回測", layout="wide")
+
+# ==========================================
+# 🔐 帳號密碼驗證模組 (讀取 Streamlit Secrets)
+# ==========================================
+def check_password():
+    """驗證使用者輸入的帳號與密碼是否符合 st.secrets['passwords']"""
+    if st.session_state.get("authenticated", False):
+        return True
+
+    st.title("🔒 策略回測系統登入驗證")
+    st.markdown("請輸入授權帳號與密碼以檢視策略數據與圖表。")
+
+    with st.form("login_form"):
+        username = st.text_input("帳號 (Username)")
+        password = st.text_input("密碼 (Password)", type="password")
+        submitted = st.form_submit_button("登入")
+
+        if submitted:
+            if "passwords" not in st.secrets:
+                st.error("⚠️ 系統尚未設定 Secrets `[passwords]`，請先至 Streamlit Cloud 後台完成設定。")
+                return False
+
+            passwords_dict = st.secrets["passwords"]
+            # 使用 hmac.compare_digest 安全比對密碼
+            if username in passwords_dict and hmac.compare_digest(str(password), str(passwords_dict[username])):
+                st.session_state["authenticated"] = True
+                st.session_state["current_user"] = username
+                st.rerun()
+            else:
+                st.error("❌ 帳號或密碼錯誤，請重新確認。")
+
+    return False
+
+# 若尚未通過驗證，立即停止執行後方主程式
+if not check_password():
+    st.stop()
+
+# ==========================================
+# 📈 主程式開始（驗證通過後才會執行）
+# ==========================================
 st.title("📈 美債 ETF 均線輪動 ＋ 宏觀利差濾網回測系統")
+
+# --- 側邊欄登入狀態與登出按鈕 ---
+st.sidebar.success(f"👤 已登入帳號：**{st.session_state.get('current_user', '')}**")
+if st.sidebar.button("🚪 登出系統"):
+    st.session_state["authenticated"] = False
+    st.session_state.pop("current_user", None)
+    st.rerun()
+st.sidebar.markdown("---")
 
 # --- 側邊欄參數設定 ---
 st.sidebar.header("⚙️ 策略核心設定")
@@ -152,10 +201,8 @@ df_daily = df_daily_all.loc[:pd.to_datetime(end_date)].copy()
 
 # --- 策略邏輯計算 ---
 if is_monthly:
-    # 保留每月最後一個實際交易日的日期作為索引（而非月末日曆日），方便核對真實交易日
     df = df_daily.groupby(df_daily.index.to_period("M")).apply(lambda x: x.iloc[-1])
     df.index = pd.to_datetime(df.index.to_timestamp(how="end").date)
-    # 取得每月實際最後交易日字串供顯示
     actual_last_dates = df_daily.groupby(df_daily.index.to_period("M")).apply(lambda x: x.index[-1].strftime("%Y-%m-%d"))
     df["Actual_Trade_Date"] = actual_last_dates.values
     periods_per_year = 12
@@ -185,7 +232,6 @@ else:
     trend_signal = np.where(df["Indicator"] > df["Indicator_MA"], 1, -1)
 
 # 3. 宏觀利差濾網判定
-# 持倉代碼：1 = long_ticker (TLT/UBT), -1 = short_ticker (TBF/TBT/HYG), 0 = 現金, 2 = 1倍 TLT
 df["Rate_Spread"] = (df["US2Y"] - df["EFFR"]).abs()
 
 if use_macro_filter:
@@ -275,16 +321,14 @@ strat_title = f"{long_ticker} / {short_ticker} 策略 ({signal_basis} 均線)"
 strat_metrics = calc_metrics(df_bt["Strategy_Ret"], df_bt["Strategy_Equity"], df_bt["Strategy_DD"], periods_per_year, df_bt["Pos"])
 bm_metrics = calc_metrics(df_bt["BM_Ret"], df_bt["BM_Equity"], df_bt["BM_DD"], periods_per_year)
 
-# --- 1. 最新訊號與執行時間軸看板（最醒目呈現） ---
+# --- 1. 最新訊號與執行時間軸看板 ---
 st.subheader("🎯 最新一期訊號與實戰執行時間軸")
 
 last_row = df_bt.iloc[-1]
 signal_gen_date = pd.to_datetime(last_row["Actual_Trade_Date"])
 
-# 計算訊號適用日期區間
 if is_monthly:
     next_month_period = signal_gen_date.to_period("M") + 1
-    # 判斷最後一筆數據是否為當月尚未結束的盤中/月中數據，或已收盤的月底數據
     next_bday = (signal_gen_date + pd.offsets.BDay(1)).strftime("%Y-%m-%d")
     apply_period_str = f"{next_month_period.strftime('%Y 年 %m 月')}（自次一交易日 {next_bday} 起持有整月）"
 else:
@@ -504,12 +548,9 @@ audit_df = pd.DataFrame({
     "本期收盤產生新訊號 (下期適用)": df_bt["Target_Signal"].apply(short_pos_name),
 })
 
-# 依日期由新到舊排列，方便直接核對近期數字
 audit_df_display = audit_df.iloc[::-1].reset_index(drop=True)
-
 st.dataframe(audit_df_display, use_container_width=True, height=450)
 
-# 提供 CSV 下載按鈕方便在 Excel 驗算
 csv_data = audit_df_display.to_csv(index=False).encode("utf-8-sig")
 st.download_button(
     label="📥 下載完整計算明細 CSV (可用 Excel 打開驗算)",
