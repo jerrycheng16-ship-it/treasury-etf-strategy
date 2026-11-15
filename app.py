@@ -3,7 +3,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from datetime import datetime
 
 # 頁面基本設定
@@ -12,7 +11,7 @@ st.title("📈 TLT / TBF 宏觀利差濾網 ＋ 均線輪動策略")
 st.markdown("""
 **策略邏輯：** 結合 **2年期美債殖利率 (US2Y)** 與 **有效聯邦基金利率 (EFFR)** 的利差作為市場狀態濾網：
 * **趨勢盤（|US2Y - EFFR| ≥ 門檻）**：啟動動能輪動，`TLT/TBF` 比率 **> 均線** 買入 **TLT**（做多長債），**< 均線** 買入 **TBF**（1倍做空長債）。
-* **區間盤（|US2Y - EFFR| < 門檻）**：忽略均線訊號，切換為 **空手觀望** 或 **單純持有 TLT**。
+* **盤整盤（|US2Y - EFFR| < 門檻）**：忽略均線訊號，切換為 **空手觀望** 或 **單純持有 TLT**。
 """)
 
 # --- 側邊欄參數設定 ---
@@ -30,7 +29,7 @@ ma_window = st.sidebar.slider("均線週期 (月數 / 約當交易日)", min_val
 spread_threshold = st.sidebar.slider("趨勢盤利差門檻 |US2Y - EFFR| (%)", min_value=0.10, max_value=1.50, value=0.50, step=0.05)
 
 range_mode = st.sidebar.radio(
-    "區間盤 (< 利差門檻) 應對模式",
+    "盤整盤 (< 利差門檻) 應對模式",
     options=["空手持有現金 (報酬率 0%)", "單純持有 TLT (忽略均線訊號)"],
     index=0
 )
@@ -52,7 +51,6 @@ def load_all_data(start, end):
     
     rates = pd.concat([dgs2, dff], axis=1)
     rates.columns = ["US2Y", "EFFR"]
-    # 將 FRED 的 '.' 缺值轉為 NaN 並向前填補（假日對齊）
     rates = rates.replace(".", np.nan).astype(float).ffill()
     
     # 合併數據並對齊交易日
@@ -84,14 +82,12 @@ df["Ratio"] = df["TLT"] / df["TBF"]
 df["Ratio_MA"] = df["Ratio"].rolling(window=window).mean()
 df["Rate_Spread"] = (df["US2Y"] - df["EFFR"]).abs()
 
-# 判定市場狀態：True 為趨勢盤，False 為區間盤
+# 判定市場狀態：True 為趨勢盤，False 為盤整盤
 df["Is_Trend"] = df["Rate_Spread"] >= spread_threshold
 
-# 決定當期收盤產生的目標持倉代碼：
-# 1 = 持有 TLT, -1 = 持有 TBF, 0 = 空手現金
+# 決定當期收盤產生的目標持倉代碼：1 = 持有 TLT, -1 = 持有 TBF, 0 = 空手現金
 trend_signal = np.where(df["Ratio"] > df["Ratio_MA"], 1, -1)
 range_signal = 0 if "空手" in range_mode else 1
-
 df["Target_Signal"] = np.where(df["Is_Trend"], trend_signal, range_signal)
 
 # 計算各標的單期報酬率
@@ -101,16 +97,8 @@ df["TBF_Ret"] = df["TBF"].pct_change()
 # 避免未來函數：用上一期的 Target_Signal 決定這一期的報酬
 df["Pos"] = df["Target_Signal"].shift(1)
 
-conditions = [
-    df["Pos"] == 1,
-    df["Pos"] == -1,
-    df["Pos"] == 0
-]
-choices = [
-    df["TLT_Ret"],
-    df["TBF_Ret"],
-    0.0
-]
+conditions = [df["Pos"] == 1, df["Pos"] == -1, df["Pos"] == 0]
+choices = [df["TLT_Ret"], df["TBF_Ret"], 0.0]
 df["Strategy_Ret"] = np.select(conditions, choices, default=np.nan)
 df["BM_Ret"] = df["TLT_Ret"]
 
@@ -128,13 +116,26 @@ df_bt["BM_Equity"] = (1 + df_bt["BM_Ret"]).cumprod()
 df_bt["Strategy_DD"] = df_bt["Strategy_Equity"] / df_bt["Strategy_Equity"].cummax() - 1
 df_bt["BM_DD"] = df_bt["BM_Equity"] / df_bt["BM_Equity"].cummax() - 1
 
+# 輔助函數：在指定圖表加上盤整盤灰色陰影
+def add_range_shading(fig, df_data):
+    in_range = False
+    range_start = None
+    for idx, row in df_data.iterrows():
+        if not row["Is_Trend"] and not in_range:
+            in_range = True
+            range_start = idx
+        elif row["Is_Trend"] and in_range:
+            in_range = False
+            fig.add_vrect(x0=range_start, x1=idx, fillcolor="gray", opacity=0.14, line_width=0)
+    if in_range:
+        fig.add_vrect(x0=range_start, x1=df_data.index[-1], fillcolor="gray", opacity=0.14, line_width=0)
+
 # --- 績效指標計算函數 ---
 def calc_metrics(returns, equity, dd, ppy, pos_series=None):
     total_ret = equity.iloc[-1] - 1
     n_periods = len(returns)
     cagr = (equity.iloc[-1]) ** (ppy / n_periods) - 1
     
-    # 勝率計算：若有空手期，僅計算實際有進場交易的期數勝率
     if pos_series is not None:
         active_rets = returns[pos_series != 0]
         win_rate = (active_rets > 0).sum() / len(active_rets) if len(active_rets) > 0 else 0
@@ -169,7 +170,12 @@ st.table(metrics_df)
 
 # 最新訊號狀態看板
 last_row = df_bt.iloc[-1]
-regime_str = f"🔥 **趨勢盤** (|US2Y - EFFR| = `{last_row['Rate_Spread']:.2f}%` ≥ `{spread_threshold:.2f}%`)" if last_row["Is_Trend"] else f"💤 **區間盤** (|US2Y - EFFR| = `{last_row['Rate_Spread']:.2f}%` < `{spread_threshold:.2f}%`)"
+trend_pct = df_bt["Is_Trend"].mean()
+regime_str = (
+    f"🔥 **趨勢盤** (|US2Y - EFFR| = `{last_row['Rate_Spread']:.2f}%` ≥ `{spread_threshold:.2f}%`)"
+    if last_row["Is_Trend"]
+    else f"💤 **盤整盤** (|US2Y - EFFR| = `{last_row['Rate_Spread']:.2f}%` < `{spread_threshold:.2f}%`)"
+)
 
 if last_row["Target_Signal"] == 1:
     action_str = "買入並持有 **TLT** (做多長債)"
@@ -180,13 +186,13 @@ else:
 
 st.info(
     f"💡 **最新訊號狀態 ({df_bt.index[-1].strftime('%Y-%m-%d')})**：\n\n"
-    f"* **利率環境**：US2Y `{last_row['US2Y']:.2f}%` / EFFR `{last_row['EFFR']:.2f}%` ➡️ {regime_str}\n"
-    f"* **動能指標**：`TLT/TBF` 比率 `{last_row['Ratio']:.4f}` vs 均線 `{last_row['Ratio_MA']:.4f}`\n"
-    f"* **建議配置**：➡️ {action_str}"
+    f"* **市場狀態判定**：US2Y `{last_row['US2Y']:.2f}%` / EFFR `{last_row['EFFR']:.2f}%` ➡️ {regime_str}（回測期間趨勢盤佔比 `{trend_pct:.1%}`）\n"
+    f"* **均線動能指標**：`TLT/TBF` 比率 `{last_row['Ratio']:.4f}` vs {ma_window}M 均線 `{last_row['Ratio_MA']:.4f}`\n"
+    f"* **最終建議配置**：➡️ {action_str}"
 )
 
-# --- 2. 累積淨值走勢圖（附帶區間盤底色標示） ---
-st.subheader("📈 累積淨值走勢圖 (灰色陰影為區間盤)")
+# --- 2. 累積淨值走勢圖 ---
+st.subheader("1️⃣ 累積淨值走勢圖 (灰色陰影區間為盤整盤)")
 fig_eq = go.Figure()
 fig_eq.add_trace(go.Scatter(
     x=df_bt.index, y=df_bt["Strategy_Equity"],
@@ -196,26 +202,4 @@ fig_eq.add_trace(go.Scatter(
 fig_eq.add_trace(go.Scatter(
     x=df_bt.index, y=df_bt["BM_Equity"],
     mode="lines", name="Benchmark (Buy & Hold TLT)",
-    line=dict(color="#7f7f7f", width=2, dash="dash")
-))
-
-# 標示區間盤背景陰影
-in_range = False
-range_start = None
-for idx, row in df_bt.iterrows():
-    if not row["Is_Trend"] and not in_range:
-        in_range = True
-        range_start = idx
-    elif row["Is_Trend"] and in_range:
-        in_range = False
-        fig_eq.add_vrect(x0=range_start, x1=idx, fillcolor="gray", opacity=0.12, line_width=0)
-if in_range:
-    fig_eq.add_vrect(x0=range_start, x1=df_bt.index[-1], fillcolor="gray", opacity=0.12, line_width=0)
-
-fig_eq.update_layout(
-    hovermode="x unified",
-    yaxis_title="累積淨值",
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    height=460
-)
-st.plotly_chart(fig_eq, use_container_width=True)
+    line=
