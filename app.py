@@ -345,4 +345,222 @@ def render_signal_card(container, row_data, title_label, badge_type="current"):
     target_str = get_ticker_badge(row_data["Target_Signal"])
     ind_val = row_data["Indicator"]
     ma_val = row_data["Indicator_MA"]
-    pos_rel = "大於均線 (>)" if ind_val > ma_
+    pos_rel = "大於均線 (>)" if ind_val > ma_val else "小於均線 (<)"
+
+    if use_macro_filter:
+        regime_txt = (
+            f"🔥 趨勢盤 (`|US2Y-EFFR| = {row_data['Rate_Spread']:.2f}% ≥ {spread_threshold:.2f}%`)"
+            if row_data["Is_Trend"]
+            else f"💤 盤整盤 (`|US2Y-EFFR| = {row_data['Rate_Spread']:.2f}% < {spread_threshold:.2f}%`)"
+        )
+    else:
+        regime_txt = "🌐 未啟用濾網（全天候均線）"
+
+    with container:
+        if badge_type == "latest":
+            st.success(
+                f"#### 🆕 {title_label}\n"
+                f"* **訊號發生／確認日**：`{gen_date.strftime('%Y-%m-%d')}`\n"
+                f"* **訊號適用期間**：**`{apply_label}`**\n"
+                f"* **建議配置標的**：➡️ **{target_str}**\n"
+                f"* **均線數值**：`{signal_basis}` = `{ind_val:.4f}` vs {ma_window}M 均線 = `{ma_val:.4f}`（{pos_rel}）\n"
+                f"* **宏觀環境**：{regime_txt}"
+            )
+        else:
+            st.info(
+                f"#### 📌 {title_label}\n"
+                f"* **訊號發生／確認日**：`{gen_date.strftime('%Y-%m-%d')}`\n"
+                f"* **訊號適用期間**：**`{apply_label}`**\n"
+                f"* **實際執行標的**：➡️ **{target_str}**\n"
+                f"* **均線數值**：`{signal_basis}` = `{ind_val:.4f}` vs {ma_window}M 均線 = `{ma_val:.4f}`（{pos_rel}）\n"
+                f"* **宏觀環境**：{regime_txt}"
+            )
+
+col_prev, col_curr = st.columns(2)
+prev_row = df_bt.iloc[-2]
+last_row = df_bt.iloc[-1]
+
+render_signal_card(col_prev, prev_row, "前一期已確認訊號（當期適用中）", badge_type="prev")
+render_signal_card(col_curr, last_row, "最新一期訊號（下期即將生效）", badge_type="latest")
+
+# --- 2. 績效總覽表格 ---
+st.subheader("📊 策略與基準 (Buy & Hold TLT) 績效對比")
+metrics_df = pd.DataFrame({
+    strat_title: strat_metrics,
+    "Benchmark (買入持有 TLT)": bm_metrics
+})
+st.table(metrics_df)
+
+# --- 3. 累積淨值走勢圖 ---
+eq_subtitle = " (灰色陰影為盤整盤)" if use_macro_filter else ""
+st.subheader(f"1️⃣ 累積淨值走勢圖{eq_subtitle}")
+fig_eq = go.Figure()
+fig_eq.add_trace(go.Scatter(
+    x=df_bt.index, y=df_bt["Strategy_Equity"],
+    mode="lines", name=strat_title,
+    line=dict(color="#1f77b4", width=2.5)
+))
+fig_eq.add_trace(go.Scatter(
+    x=df_bt.index, y=df_bt["BM_Equity"],
+    mode="lines", name="Benchmark (Buy & Hold TLT)",
+    line=dict(color="#7f7f7f", width=2, dash="dash")
+))
+add_range_shading(fig_eq, df_bt)
+fig_eq.update_layout(
+    hovermode="x unified",
+    yaxis_title="累積淨值",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    height=420
+)
+st.plotly_chart(fig_eq, use_container_width=True)
+
+# --- 4. 歷史回撤走勢圖 ---
+st.subheader("2️⃣ 歷史回撤走勢圖 (Drawdown)")
+fig_dd = go.Figure()
+fig_dd.add_trace(go.Scatter(
+    x=df_bt.index, y=df_bt["Strategy_DD"] * 100,
+    mode="lines", name="策略回撤 (%)",
+    fill="tozeroy", line=dict(color="#d62728", width=1.8)
+))
+fig_dd.add_trace(go.Scatter(
+    x=df_bt.index, y=df_bt["BM_DD"] * 100,
+    mode="lines", name="TLT 回撤 (%)",
+    line=dict(color="#555555", width=1.5, dash="dot")
+))
+fig_dd.update_layout(
+    hovermode="x unified",
+    yaxis_title="回撤幅度 (%)",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    height=380
+)
+st.plotly_chart(fig_dd, use_container_width=True)
+
+# --- 5. 市場狀態判定圖（僅在開啟宏觀濾網時顯示） ---
+if use_macro_filter:
+    st.subheader("3️⃣ 市場狀態判定圖：趨勢盤 vs 盤整盤 (|US2Y - EFFR|)")
+    fig_regime = go.Figure()
+
+    fig_regime.add_trace(go.Scatter(
+        x=df_bt.index, y=df_bt["Rate_Spread"],
+        mode="lines", name="|US2Y - EFFR| 利差 (%)",
+        line=dict(color="#9467bd", width=2),
+        fill="tozeroy", fillcolor="rgba(148, 103, 189, 0.15)"
+    ))
+
+    trend_df = df_bt[df_bt["Is_Trend"]]
+    fig_regime.add_trace(go.Scatter(
+        x=trend_df.index, y=trend_df["Rate_Spread"],
+        mode="markers", name="趨勢盤 (啟動均線輪動)",
+        marker=dict(color="#2ca02c", size=6)
+    ))
+
+    range_df = df_bt[~df_bt["Is_Trend"]]
+    fig_regime.add_trace(go.Scatter(
+        x=range_df.index, y=range_df["Rate_Spread"],
+        mode="markers", name="盤整盤 (暫停輪動)",
+        marker=dict(color="#8c8c8c", size=5)
+    ))
+
+    fig_regime.add_hline(
+        y=spread_threshold, line_dash="dash", line_color="#d62728", line_width=2,
+        annotation_text=f"趨勢門檻 {spread_threshold:.2f}%", annotation_position="top left"
+    )
+
+    fig_regime.update_layout(
+        hovermode="x unified",
+        yaxis_title="利差絕對值 (%)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=400
+    )
+    st.plotly_chart(fig_regime, use_container_width=True)
+
+# --- 6. 訊號指標與均線走勢圖 ---
+chart_num = "4️⃣" if use_macro_filter else "3️⃣"
+st.subheader(f"{chart_num} {signal_basis} 走勢與 {ma_window} 個月移動平均線")
+fig_ind = go.Figure()
+fig_ind.add_trace(go.Scatter(
+    x=df_bt.index, y=df_bt["Indicator"],
+    mode="lines", name=signal_basis,
+    line=dict(color="#17becf", width=2.2)
+))
+fig_ind.add_trace(go.Scatter(
+    x=df_bt.index, y=df_bt["Indicator_MA"],
+    mode="lines", name=f"{ma_window} 個月均線 ({ma_window}M SMA)",
+    line=dict(color="#ff7f0e", width=2)
+))
+
+cross_above = df_bt[(df_bt["Indicator"] > df_bt["Indicator_MA"]) & (df_bt["Indicator"].shift(1) <= df_bt["Indicator_MA"].shift(1))]
+cross_below = df_bt[(df_bt["Indicator"] < df_bt["Indicator_MA"]) & (df_bt["Indicator"].shift(1) >= df_bt["Indicator_MA"].shift(1))]
+
+if signal_basis in ["TBF", "TBT"]:
+    bull_pts, bear_pts = cross_below, cross_above
+    bull_label, bear_label = f"跌破均線 (偏多 {long_ticker})", f"突破均線 (偏空 {short_ticker})"
+else:
+    bull_pts, bear_pts = cross_above, cross_below
+    bull_label, bear_label = f"突破均線 (偏多 {long_ticker})", f"跌破均線 (偏空 {short_ticker})"
+
+fig_ind.add_trace(go.Scatter(
+    x=bull_pts.index, y=bull_pts["Indicator"],
+    mode="markers", name=bull_label,
+    marker=dict(symbol="triangle-up", size=10, color="#2ca02c")
+))
+fig_ind.add_trace(go.Scatter(
+    x=bear_pts.index, y=bear_pts["Indicator"],
+    mode="markers", name=bear_label,
+    marker=dict(symbol="triangle-down", size=10, color="#d62728")
+))
+
+add_range_shading(fig_ind, df_bt)
+fig_ind.update_layout(
+    hovermode="x unified",
+    yaxis_title=f"{signal_basis} 數值",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    height=420
+)
+st.plotly_chart(fig_ind, use_container_width=True)
+
+# --- 7. 逐期計算明細與訊號核對表 ---
+st.markdown("---")
+st.subheader("📋 逐期計算明細與訊號核對表（由新到舊排序）")
+st.caption("說明：「當期實際持有標的」係依據**上一期收盤產生的訊號**決定，並賺取「本期」的漲跌幅；「本期收盤產生訊號」則將於**下一期**生效。")
+
+def short_pos_name(code):
+    if code == 1:
+        return long_ticker
+    elif code == -1:
+        return short_ticker
+    elif code == 2:
+        return "TLT (保守)"
+    elif code == 0:
+        return "現金 (空手)"
+    return "-"
+
+audit_df = pd.DataFrame({
+    "訊號確認日 (實際交易日)": df_bt["Actual_Trade_Date"],
+    "TLT 還原收盤": df_bt["TLT"].round(2),
+    f"{long_ticker} 還原收盤": df_bt[long_ticker].round(2),
+    f"{short_ticker} 還原收盤": df_bt[short_ticker].round(2),
+    f"指標 ({signal_basis})": df_bt["Indicator"].round(4),
+    f"{ma_window}M 均線": df_bt["Indicator_MA"].round(4),
+    "US2Y (%)": df_bt["US2Y"].round(2),
+    "EFFR (%)": df_bt["EFFR"].round(2),
+    "利差 |US2Y-EFFR| (%)": df_bt["Rate_Spread"].round(2),
+    "市場狀態": np.where(df_bt["Is_Trend"], "趨勢盤", "盤整盤") if use_macro_filter else "無濾網",
+    "本期實際持有標的 (依上期訊號)": df_bt["Pos"].apply(short_pos_name),
+    "本期策略報酬 (%)": (df_bt["Strategy_Ret"] * 100).round(2),
+    "本期 TLT 報酬 (%)": (df_bt["BM_Ret"] * 100).round(2),
+    "策略累積淨值": df_bt["Strategy_Equity"].round(4),
+    "TLT 累積淨值": df_bt["BM_Equity"].round(4),
+    "本期收盤產生新訊號 (下期適用)": df_bt["Target_Signal"].apply(short_pos_name),
+})
+
+audit_df_display = audit_df.iloc[::-1].reset_index(drop=True)
+st.dataframe(audit_df_display, use_container_width=True, height=450)
+
+csv_data = audit_df_display.to_csv(index=False).encode("utf-8-sig")
+st.download_button(
+    label="📥 下載完整計算明細 CSV (可用 Excel 打開驗算)",
+    data=csv_data,
+    file_name=f"tlt_strategy_audit_{datetime.today().strftime('%Y%m%d')}.csv",
+    mime="text/csv"
+)
