@@ -7,7 +7,7 @@ import hmac
 from datetime import datetime
 
 # 頁面基本設定（必須放在所有 st 指令最前面）
-st.set_page_config(page_title="美債 ETF 多模式均線與宏觀濾網回測", layout="wide")
+st.set_page_config(page_title="自訂 ETF 均線輪動與宏觀濾網回測", layout="wide")
 
 # ==========================================
 # 🔐 帳號密碼驗證模組 (讀取 Streamlit Secrets)
@@ -46,7 +46,7 @@ if not check_password():
 # ==========================================
 # 📈 主程式開始（驗證通過後才會執行）
 # ==========================================
-st.title("📈 美債 ETF 均線輪動 ＋ 宏觀利差濾網回測系統")
+st.title("📈 自訂 ETF 均線輪動 ＋ 宏觀利差濾網回測系統")
 
 # --- 側邊欄登入狀態與登出按鈕 ---
 st.sidebar.success(f"👤 已登入帳號：**{st.session_state.get('current_user', '')}**")
@@ -56,76 +56,57 @@ if st.sidebar.button("🚪 登出系統"):
     st.rerun()
 st.sidebar.markdown("---")
 
-# --- 側邊欄參數設定（已套用最佳參數為預設） ---
-st.sidebar.header("⚙️ 策略核心設定")
+# --- 側邊欄參數設定 ---
+st.sidebar.header("⚙️ 標的與均線設定")
 
-trade_pair = st.sidebar.radio(
-    "1️⃣ 做多標的槓桿倍數",
-    options=[
-        "1倍組合 (做多 TLT / 預設做空 TBF)",
-        "2倍槓桿組合 (做多 UBT / 預設做空 TBT)"
-    ],
-    index=1,  # 預設：2倍槓桿組合 (UBT / TBT)
-    help="選擇偏多訊號時買進的長債 ETF 倍數。"
-)
+long_ticker = st.sidebar.text_input(
+    "1️⃣ 偏多買入標的 (站上均線時買入)",
+    value="UBT",
+    help="輸入美股代號，例如：UBT、TLT、QQQ、SPY。系統將以此標的相對於其均線來判斷多空。"
+).strip().upper()
 
-is_2x = "2倍" in trade_pair
-long_ticker = "UBT" if is_2x else "TLT"
-default_short_ticker = "TBT" if is_2x else "TBF"
+short_ticker = st.sidebar.text_input(
+    "2️⃣ 偏空買入標的 (跌破均線時買入)",
+    value="TBT",
+    help="輸入美股代號，例如：TBT、TBF、HYG、SH、PSQ。"
+).strip().upper()
 
-bear_mode = st.sidebar.radio(
-    "2️⃣ 偏空訊號時的操作方式",
-    options=[
-        f"買入反向做空 ETF ({default_short_ticker})",
-        "買入高收益債 ETF (HYG) 代替放空"
-    ],
-    index=0,  # 預設：買入反向做空 ETF
-    help="當均線判定美債偏空時，可選擇買入反向做空美債 ETF，或改買高收益公司債 ETF (HYG)。"
-)
-
-use_hyg_for_bear = "HYG" in bear_mode
-short_ticker = "HYG" if use_hyg_for_bear else default_short_ticker
-
-signal_basis = st.sidebar.selectbox(
-    "3️⃣ 訊號判斷基準 (相對於均線)",
-    options=["TLT / TBF", "TLT / TBT", "UBT / TBT", "TLT", "TBF", "TBT", "UBT"],
-    index=3,  # 預設：TLT
-    help="選擇用來計算移動平均線並判斷多空方向的價格或比率序列。"
+ma_window = st.sidebar.number_input(
+    "3️⃣ 均線週期 (幾個月均線)",
+    min_value=1,
+    max_value=60,
+    value=3,
+    step=1,
+    help="以「偏多買入標的」計算移動平均線的月數（例如輸入 3 代表 3 個月均線）。"
 )
 
 use_macro_filter = st.sidebar.checkbox(
     "4️⃣ 啟用宏觀利率濾網 (|US2Y - EFFR|)",
-    value=True,  # 預設：開啟
+    value=True,
     help="開啟後，僅在 2 年期美債利率與有效聯邦基金利率差距 >= 門檻時啟動均線輪動；關閉則全天候執行均線策略。"
 )
 
 st.sidebar.markdown("---")
-st.sidebar.header("📅 回測與均線參數")
+st.sidebar.header("📅 回測期間與頻率")
 start_date = st.sidebar.date_input(
     "起始日期",
     value=pd.to_datetime("2010-02-01"),
-    min_value=pd.to_datetime("2010-02-01"),
+    min_value=pd.to_datetime("2000-01-01"),
     max_value=datetime.today()
 )
 end_date = st.sidebar.date_input(
     "結束日期",
     value=datetime.today(),
-    min_value=pd.to_datetime("2010-03-01"),
+    min_value=pd.to_datetime("2000-02-01"),
     max_value=datetime.today()
 )
 
 rebalance_freq = st.sidebar.radio(
     "訊號確認與換倉頻率",
     options=["月頻 (每月最後交易日收盤確認，次月持有)", "日頻 (每日收盤確認，次日持有)"],
-    index=0  # 預設：月頻
+    index=0
 )
 is_monthly = "月頻" in rebalance_freq
-
-ma_window = st.sidebar.slider(
-    "均線週期 (月數 / 約當交易日)",
-    min_value=3, max_value=24,
-    value=3  # 預設：3 個月均線
-)
 
 # 若開啟宏觀濾網，才顯示濾網細部參數
 if use_macro_filter:
@@ -134,7 +115,7 @@ if use_macro_filter:
     spread_threshold = st.sidebar.slider(
         "趨勢盤利差門檻 |US2Y - EFFR| (%)",
         min_value=0.10, max_value=1.50,
-        value=0.45, step=0.05  # 預設：0.45%
+        value=0.45, step=0.05
     )
     range_mode = st.sidebar.radio(
         "盤整盤 (< 利差門檻) 應對模式",
@@ -143,11 +124,15 @@ if use_macro_filter:
             f"單純持有 {long_ticker} (忽略均線訊號)",
             "單純持有 1倍 TLT (忽略均線訊號)"
         ],
-        index=2  # 預設：單純持有 1倍 TLT
+        index=2
     )
 else:
     spread_threshold = 0.0
     range_mode = "無"
+
+if not long_ticker or not short_ticker:
+    st.warning("⚠️ 請在左側輸入完整的「偏多買入標的」與「偏空買入標的」代號。")
+    st.stop()
 
 # 動態顯示策略邏輯說明
 filter_desc = (
@@ -155,23 +140,33 @@ filter_desc = (
     if use_macro_filter
     else "* **宏觀濾網已關閉**：全天候執行均線輪動策略（無盤整過濾）。"
 )
-bull_cond = "跌破均線 (< SMA)" if signal_basis in ["TBF", "TBT"] else "站上均線 (> SMA)"
-bear_cond = "站上均線 (> SMA)" if signal_basis in ["TBF", "TBT"] else "跌破均線 (< SMA)"
-bear_action_desc = f"買入 **{short_ticker}**（高收益公司債替代）" if use_hyg_for_bear else f"買入 **{short_ticker}**（{'2倍' if is_2x else '1倍'}做空長債）"
 
 st.markdown(f"""
-**當前策略邏輯：** 觀察 **`{signal_basis}`** 相對於 **{ma_window} 個月移動平均線** 的位置：
-* 當 `{signal_basis}` **{bull_cond}** ➡️ 買入 **{long_ticker}**（{'2倍' if is_2x else '1倍'}做多長債）
-* 當 `{signal_basis}` **{bear_cond}** ➡️ {bear_action_desc}
+**當前策略邏輯：** 以 **`{long_ticker}`** 的價格相對於其 **{ma_window} 個月移動平均線** 作為判斷基準：
+* 當 `{long_ticker}` **站上 {ma_window} 個月均線 (> SMA)** ➡️ 買入 **`{long_ticker}`**
+* 當 `{long_ticker}` **跌破 {ma_window} 個月均線 (< SMA)** ➡️ 買入 **`{short_ticker}`**
 {filter_desc}
 """)
 
 # --- 數據下載與快取 ---
 @st.cache_data(ttl=3600)
-def load_all_data():
-    fetch_start = "2009-01-01"
-    etf_raw = yf.download(["TLT", "TBF", "TBT", "UBT", "HYG"], start=fetch_start, auto_adjust=True)["Close"]
+def load_market_data(t_long, t_short):
+    fetch_start = "2000-01-01"
+    tickers_to_fetch = list(set([t_long, t_short, "TLT"]))
     
+    # 1. 下載 ETF 還原收盤價
+    raw = yf.download(tickers_to_fetch, start=fetch_start, auto_adjust=True)["Close"]
+    
+    # 若只抓到單一欄位或 MultiIndex 處理
+    if isinstance(raw, pd.Series):
+        raw = raw.to_frame(name=tickers_to_fetch[0])
+    
+    # 檢查代號是否有效
+    missing_tickers = [t for t in tickers_to_fetch if t not in raw.columns or raw[t].dropna().empty]
+    if missing_tickers:
+        return None, missing_tickers
+
+    # 2. 從 FRED 下載 DGS2 (2年期美債利率) 與 DFF (Effective Fed Funds Rate)
     dgs2_url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS2"
     dff_url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFF"
     
@@ -182,18 +177,28 @@ def load_all_data():
     rates.columns = ["US2Y", "EFFR"]
     rates = rates.replace(".", np.nan).astype(float).ffill()
     
-    combined = etf_raw.join(rates, how="left").ffill().dropna()
-    return combined
+    # 合併數據並對齊交易日（取所有輸入標的皆已上市的共同區間）
+    combined = raw[tickers_to_fetch].join(rates, how="left").ffill().dropna()
+    return combined, []
 
 if start_date >= end_date:
     st.error("起始日期必須早於結束日期，請重新選擇。")
     st.stop()
 
 try:
-    df_daily_all = load_all_data()
+    df_daily_all, missing_list = load_market_data(long_ticker, short_ticker)
 except Exception as e:
-    st.error(f"數據下載失敗（請檢查網路或 FRED 連線）：{e}")
+    st.error(f"數據下載失敗（請檢查網路連線或確認美股代號是否正確）：{e}")
     st.stop()
+
+if missing_list:
+    st.error(f"❌ 找不到以下標的的歷史數據，請確認美股代號是否輸入正確：`{', '.join(missing_list)}`")
+    st.stop()
+
+# 提示共同數據最早起始日
+earliest_common_date = df_daily_all.index.min().date()
+if start_date < earliest_common_date:
+    st.info(f"ℹ️ 提醒：所選標的（`{long_ticker}`、`{short_ticker}`）共同上市的最早日期為 **`{earliest_common_date}`**，回測將自動從該日期之後的均線完成日開始計算。")
 
 df_daily = df_daily_all.loc[:pd.to_datetime(end_date)].copy()
 
@@ -204,30 +209,19 @@ if is_monthly:
     actual_last_dates = df_daily.groupby(df_daily.index.to_period("M")).apply(lambda x: x.index[-1].strftime("%Y-%m-%d"))
     df["Actual_Trade_Date"] = actual_last_dates.values
     periods_per_year = 12
-    window = ma_window
+    window = int(ma_window)
 else:
     df = df_daily.copy()
     df["Actual_Trade_Date"] = df.index.strftime("%Y-%m-%d")
     periods_per_year = 252
-    window = ma_window * 21
+    window = int(ma_window) * 21
 
-# 1. 根據選擇的訊號判斷基準計算指標序列
-if signal_basis == "TLT / TBF":
-    df["Indicator"] = df["TLT"] / df["TBF"]
-elif signal_basis == "TLT / TBT":
-    df["Indicator"] = df["TLT"] / df["TBT"]
-elif signal_basis == "UBT / TBT":
-    df["Indicator"] = df["UBT"] / df["TBT"]
-else:
-    df["Indicator"] = df[signal_basis]
-
+# 1. 統一以「偏多買入標的 (long_ticker)」計算價格與均線
+df["Indicator"] = df[long_ticker]
 df["Indicator_MA"] = df["Indicator"].rolling(window=window).mean()
 
-# 2. 產生原始均線多空訊號（1 = 偏多標的, -1 = 偏空標的）
-if signal_basis in ["TBF", "TBT"]:
-    trend_signal = np.where(df["Indicator"] > df["Indicator_MA"], -1, 1)
-else:
-    trend_signal = np.where(df["Indicator"] > df["Indicator_MA"], 1, -1)
+# 2. 產生原始均線多空訊號（1 = 買入 long_ticker, -1 = 買入 short_ticker）
+trend_signal = np.where(df["Indicator"] > df["Indicator_MA"], 1, -1)
 
 # 3. 宏觀利差濾網判定
 df["Rate_Spread"] = (df["US2Y"] - df["EFFR"]).abs()
@@ -262,7 +256,7 @@ df["BM_Ret"] = df["TLT_Ret"]
 df_bt = df.loc[pd.to_datetime(start_date):].dropna(subset=["Strategy_Ret", "BM_Ret", "Indicator_MA"]).copy()
 
 if len(df_bt) < 2:
-    st.warning("選取的回測區間有效交易期數不足（請拉長起始與結束日期的間隔，或調早起始日期）。")
+    st.warning("選取的回測區間有效交易期數不足（請拉長起始與結束日期的間隔，或確認所選 ETF 上市時間是否足夠）。")
     st.stop()
 
 # 計算累積淨值與回撤
@@ -315,7 +309,7 @@ def calc_metrics(returns, equity, dd, ppy, pos_series=None):
         "市場曝險時間比例": f"{exposure:.1%}"
     }
 
-strat_title = f"{long_ticker} / {short_ticker} 策略 ({signal_basis} 均線)"
+strat_title = f"{long_ticker} / {short_ticker} 策略 ({long_ticker} {ma_window}M 均線)"
 strat_metrics = calc_metrics(df_bt["Strategy_Ret"], df_bt["Strategy_Equity"], df_bt["Strategy_DD"], periods_per_year, df_bt["Pos"])
 bm_metrics = calc_metrics(df_bt["BM_Ret"], df_bt["BM_Equity"], df_bt["BM_DD"], periods_per_year)
 
@@ -324,13 +318,13 @@ st.subheader("🎯 最新兩期訊號與實戰執行時間軸")
 
 def get_ticker_badge(code):
     if code == 1:
-        return f"{long_ticker} ({'2倍' if is_2x else '1倍'}做多)"
+        return f"買進並持有 {long_ticker} (偏多標的)"
     elif code == -1:
-        return f"{short_ticker} ({'高收益債' if use_hyg_for_bear else ('2倍' if is_2x else '1倍') + '做空'})"
+        return f"買進並持有 {short_ticker} (偏空標的)"
     elif code == 2:
-        return "TLT (1倍保守持倉)"
+        return "買進並持有 TLT (盤整保守持倉)"
     else:
-        return "現金 (空手觀望)"
+        return "空手觀望 (持有現金)"
 
 def render_signal_card(container, row_data, title_label, badge_type="current"):
     gen_date = pd.to_datetime(row_data["Actual_Trade_Date"])
@@ -345,7 +339,7 @@ def render_signal_card(container, row_data, title_label, badge_type="current"):
     target_str = get_ticker_badge(row_data["Target_Signal"])
     ind_val = row_data["Indicator"]
     ma_val = row_data["Indicator_MA"]
-    pos_rel = "大於均線 (>)" if ind_val > ma_val else "小於均線 (<)"
+    pos_rel = "站上均線 (>)" if ind_val > ma_val else "跌破均線 (<)"
 
     if use_macro_filter:
         regime_txt = (
@@ -363,7 +357,7 @@ def render_signal_card(container, row_data, title_label, badge_type="current"):
                 f"* **訊號發生／確認日**：`{gen_date.strftime('%Y-%m-%d')}`\n"
                 f"* **訊號適用期間**：**`{apply_label}`**\n"
                 f"* **建議配置標的**：➡️ **{target_str}**\n"
-                f"* **均線數值**：`{signal_basis}` = `{ind_val:.4f}` vs {ma_window}M 均線 = `{ma_val:.4f}`（{pos_rel}）\n"
+                f"* **均線數值**：`{long_ticker}` = `{ind_val:.2f}` vs {ma_window}M 均線 = `{ma_val:.2f}`（{pos_rel}）\n"
                 f"* **宏觀環境**：{regime_txt}"
             )
         else:
@@ -372,7 +366,7 @@ def render_signal_card(container, row_data, title_label, badge_type="current"):
                 f"* **訊號發生／確認日**：`{gen_date.strftime('%Y-%m-%d')}`\n"
                 f"* **訊號適用期間**：**`{apply_label}`**\n"
                 f"* **實際執行標的**：➡️ **{target_str}**\n"
-                f"* **均線數值**：`{signal_basis}` = `{ind_val:.4f}` vs {ma_window}M 均線 = `{ma_val:.4f}`（{pos_rel}）\n"
+                f"* **均線數值**：`{long_ticker}` = `{ind_val:.2f}` vs {ma_window}M 均線 = `{ma_val:.2f}`（{pos_rel}）\n"
                 f"* **宏觀環境**：{regime_txt}"
             )
 
@@ -474,13 +468,13 @@ if use_macro_filter:
     )
     st.plotly_chart(fig_regime, use_container_width=True)
 
-# --- 6. 訊號指標與均線走勢圖 ---
+# --- 6. 買入標的與均線走勢圖 ---
 chart_num = "4️⃣" if use_macro_filter else "3️⃣"
-st.subheader(f"{chart_num} {signal_basis} 走勢與 {ma_window} 個月移動平均線")
+st.subheader(f"{chart_num} {long_ticker} 走勢與 {ma_window} 個月移動平均線")
 fig_ind = go.Figure()
 fig_ind.add_trace(go.Scatter(
     x=df_bt.index, y=df_bt["Indicator"],
-    mode="lines", name=signal_basis,
+    mode="lines", name=f"{long_ticker} 還原收盤價",
     line=dict(color="#17becf", width=2.2)
 ))
 fig_ind.add_trace(go.Scatter(
@@ -492,28 +486,21 @@ fig_ind.add_trace(go.Scatter(
 cross_above = df_bt[(df_bt["Indicator"] > df_bt["Indicator_MA"]) & (df_bt["Indicator"].shift(1) <= df_bt["Indicator_MA"].shift(1))]
 cross_below = df_bt[(df_bt["Indicator"] < df_bt["Indicator_MA"]) & (df_bt["Indicator"].shift(1) >= df_bt["Indicator_MA"].shift(1))]
 
-if signal_basis in ["TBF", "TBT"]:
-    bull_pts, bear_pts = cross_below, cross_above
-    bull_label, bear_label = f"跌破均線 (偏多 {long_ticker})", f"突破均線 (偏空 {short_ticker})"
-else:
-    bull_pts, bear_pts = cross_above, cross_below
-    bull_label, bear_label = f"突破均線 (偏多 {long_ticker})", f"跌破均線 (偏空 {short_ticker})"
-
 fig_ind.add_trace(go.Scatter(
-    x=bull_pts.index, y=bull_pts["Indicator"],
-    mode="markers", name=bull_label,
+    x=cross_above.index, y=cross_above["Indicator"],
+    mode="markers", name=f"突破均線 (買進 {long_ticker})",
     marker=dict(symbol="triangle-up", size=10, color="#2ca02c")
 ))
 fig_ind.add_trace(go.Scatter(
-    x=bear_pts.index, y=bear_pts["Indicator"],
-    mode="markers", name=bear_label,
+    x=cross_below.index, y=cross_below["Indicator"],
+    mode="markers", name=f"跌破均線 (買進 {short_ticker})",
     marker=dict(symbol="triangle-down", size=10, color="#d62728")
 ))
 
 add_range_shading(fig_ind, df_bt)
 fig_ind.update_layout(
     hovermode="x unified",
-    yaxis_title=f"{signal_basis} 數值",
+    yaxis_title=f"{long_ticker} 價格",
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     height=420
 )
@@ -535,13 +522,17 @@ def short_pos_name(code):
         return "現金 (空手)"
     return "-"
 
-audit_df = pd.DataFrame({
+# 建立基礎欄位字典（避免 long_ticker 與 TLT 重複時欄位名稱衝突）
+audit_cols = {
     "訊號確認日 (實際交易日)": df_bt["Actual_Trade_Date"],
-    "TLT 還原收盤": df_bt["TLT"].round(2),
-    f"{long_ticker} 還原收盤": df_bt[long_ticker].round(2),
+    f"{long_ticker} 還原收盤 (判斷基準)": df_bt[long_ticker].round(2),
+    f"{ma_window}M 均線 ({long_ticker})": df_bt["Indicator_MA"].round(2),
     f"{short_ticker} 還原收盤": df_bt[short_ticker].round(2),
-    f"指標 ({signal_basis})": df_bt["Indicator"].round(4),
-    f"{ma_window}M 均線": df_bt["Indicator_MA"].round(4),
+}
+if long_ticker != "TLT" and short_ticker != "TLT":
+    audit_cols["TLT 還原收盤 (Benchmark)"] = df_bt["TLT"].round(2)
+
+audit_cols.update({
     "US2Y (%)": df_bt["US2Y"].round(2),
     "EFFR (%)": df_bt["EFFR"].round(2),
     "利差 |US2Y-EFFR| (%)": df_bt["Rate_Spread"].round(2),
@@ -554,6 +545,7 @@ audit_df = pd.DataFrame({
     "本期收盤產生新訊號 (下期適用)": df_bt["Target_Signal"].apply(short_pos_name),
 })
 
+audit_df = pd.DataFrame(audit_cols)
 audit_df_display = audit_df.iloc[::-1].reset_index(drop=True)
 st.dataframe(audit_df_display, use_container_width=True, height=450)
 
@@ -561,6 +553,6 @@ csv_data = audit_df_display.to_csv(index=False).encode("utf-8-sig")
 st.download_button(
     label="📥 下載完整計算明細 CSV (可用 Excel 打開驗算)",
     data=csv_data,
-    file_name=f"tlt_strategy_audit_{datetime.today().strftime('%Y%m%d')}.csv",
+    file_name=f"{long_ticker}_{short_ticker}_strategy_audit_{datetime.today().strftime('%Y%m%d')}.csv",
     mime="text/csv"
 )
