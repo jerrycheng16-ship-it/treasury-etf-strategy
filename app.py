@@ -60,9 +60,9 @@ st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 標的與均線設定")
 
 long_ticker = st.sidebar.text_input(
-    "1️⃣ 偏多買入標的 (站上均線時買入)",
+    "1️⃣ 偏多買入標的 (站上均線時買入 / BM)",
     value="UBT",
-    help="輸入美股代號，例如：UBT、TLT、QQQ、SPY。系統將以此標的相對於其均線來判斷多空。"
+    help="輸入美股代號，例如：UBT、TLT、QQQ、SPY。系統將以此標的相對於其均線來判斷多空，並作為 Benchmark 基準。"
 ).strip().upper()
 
 short_ticker = st.sidebar.text_input(
@@ -142,7 +142,7 @@ filter_desc = (
 )
 
 st.markdown(f"""
-**當前策略邏輯：** 以 **`{long_ticker}`** 的價格相對於其 **{ma_window} 個月移動平均線** 作為判斷基準：
+**當前策略邏輯：** 以 **`{long_ticker}`** 的價格相對於其 **{ma_window} 個月移動平均線** 作為判斷基準（Benchmark 為單純 Buy & Hold **`{long_ticker}`**）：
 * 當 `{long_ticker}` **站上 {ma_window} 個月均線 (> SMA)** ➡️ 買入 **`{long_ticker}`**
 * 當 `{long_ticker}` **跌破 {ma_window} 個月均線 (< SMA)** ➡️ 買入 **`{short_ticker}`**
 {filter_desc}
@@ -150,14 +150,13 @@ st.markdown(f"""
 
 # --- 數據下載與快取 ---
 @st.cache_data(ttl=3600)
-def load_market_data(t_long, t_short):
+def load_market_data(t_long, t_short, need_tlt):
     fetch_start = "2000-01-01"
-    tickers_to_fetch = list(set([t_long, t_short, "TLT"]))
+    tickers_to_fetch = list(set([t_long, t_short] + (["TLT"] if need_tlt else [])))
     
     # 1. 下載 ETF 還原收盤價
     raw = yf.download(tickers_to_fetch, start=fetch_start, auto_adjust=True)["Close"]
     
-    # 若只抓到單一欄位或 MultiIndex 處理
     if isinstance(raw, pd.Series):
         raw = raw.to_frame(name=tickers_to_fetch[0])
     
@@ -177,7 +176,7 @@ def load_market_data(t_long, t_short):
     rates.columns = ["US2Y", "EFFR"]
     rates = rates.replace(".", np.nan).astype(float).ffill()
     
-    # 合併數據並對齊交易日（取所有輸入標的皆已上市的共同區間）
+    # 合併數據並對齊交易日
     combined = raw[tickers_to_fetch].join(rates, how="left").ffill().dropna()
     return combined, []
 
@@ -185,8 +184,10 @@ if start_date >= end_date:
     st.error("起始日期必須早於結束日期，請重新選擇。")
     st.stop()
 
+need_tlt_data = use_macro_filter and ("1倍 TLT" in range_mode)
+
 try:
-    df_daily_all, missing_list = load_market_data(long_ticker, short_ticker)
+    df_daily_all, missing_list = load_market_data(long_ticker, short_ticker, need_tlt_data)
 except Exception as e:
     st.error(f"數據下載失敗（請檢查網路連線或確認美股代號是否正確）：{e}")
     st.stop()
@@ -242,7 +243,7 @@ else:
 # 4. 計算各標的單期報酬率
 df["Long_Ret"] = df[long_ticker].pct_change()
 df["Short_Ret"] = df[short_ticker].pct_change()
-df["TLT_Ret"] = df["TLT"].pct_change()
+df["TLT_Ret"] = df["TLT"].pct_change() if "TLT" in df.columns else df["Long_Ret"]
 
 # 避免未來函數：用上一期的 Target_Signal 決定這一期的報酬
 df["Pos"] = df["Target_Signal"].shift(1)
@@ -250,7 +251,9 @@ df["Pos"] = df["Target_Signal"].shift(1)
 conditions = [df["Pos"] == 1, df["Pos"] == -1, df["Pos"] == 0, df["Pos"] == 2]
 choices = [df["Long_Ret"], df["Short_Ret"], 0.0, df["TLT_Ret"]]
 df["Strategy_Ret"] = np.select(conditions, choices, default=np.nan)
-df["BM_Ret"] = df["TLT_Ret"]
+
+# Benchmark 設為單純 Buy & Hold 偏多買入標的 (long_ticker)
+df["BM_Ret"] = df["Long_Ret"]
 
 # 過濾回測起始日之後的數據並清除空值
 df_bt = df.loc[pd.to_datetime(start_date):].dropna(subset=["Strategy_Ret", "BM_Ret", "Indicator_MA"]).copy()
@@ -310,6 +313,7 @@ def calc_metrics(returns, equity, dd, ppy, pos_series=None):
     }
 
 strat_title = f"{long_ticker} / {short_ticker} 策略 ({long_ticker} {ma_window}M 均線)"
+bm_title = f"Benchmark (Buy & Hold {long_ticker})"
 strat_metrics = calc_metrics(df_bt["Strategy_Ret"], df_bt["Strategy_Equity"], df_bt["Strategy_DD"], periods_per_year, df_bt["Pos"])
 bm_metrics = calc_metrics(df_bt["BM_Ret"], df_bt["BM_Equity"], df_bt["BM_DD"], periods_per_year)
 
@@ -378,10 +382,10 @@ render_signal_card(col_prev, prev_row, "前一期已確認訊號（當期適用�
 render_signal_card(col_curr, last_row, "最新一期訊號（下期即將生效）", badge_type="latest")
 
 # --- 2. 績效總覽表格 ---
-st.subheader("📊 策略與基準 (Buy & Hold TLT) 績效對比")
+st.subheader(f"📊 策略與基準 (Buy & Hold {long_ticker}) 績效對比")
 metrics_df = pd.DataFrame({
     strat_title: strat_metrics,
-    "Benchmark (買入持有 TLT)": bm_metrics
+    bm_title: bm_metrics
 })
 st.table(metrics_df)
 
@@ -396,7 +400,7 @@ fig_eq.add_trace(go.Scatter(
 ))
 fig_eq.add_trace(go.Scatter(
     x=df_bt.index, y=df_bt["BM_Equity"],
-    mode="lines", name="Benchmark (Buy & Hold TLT)",
+    mode="lines", name=bm_title,
     line=dict(color="#7f7f7f", width=2, dash="dash")
 ))
 add_range_shading(fig_eq, df_bt)
@@ -418,7 +422,7 @@ fig_dd.add_trace(go.Scatter(
 ))
 fig_dd.add_trace(go.Scatter(
     x=df_bt.index, y=df_bt["BM_DD"] * 100,
-    mode="lines", name="TLT 回撤 (%)",
+    mode="lines", name=f"{long_ticker} (BM) 回撤 (%)",
     line=dict(color="#555555", width=1.5, dash="dot")
 ))
 fig_dd.update_layout(
@@ -522,15 +526,14 @@ def short_pos_name(code):
         return "現金 (空手)"
     return "-"
 
-# 建立基礎欄位字典（避免 long_ticker 與 TLT 重複時欄位名稱衝突）
 audit_cols = {
     "訊號確認日 (實際交易日)": df_bt["Actual_Trade_Date"],
-    f"{long_ticker} 還原收盤 (判斷基準)": df_bt[long_ticker].round(2),
+    f"{long_ticker} 還原收盤 (判斷基準/BM)": df_bt[long_ticker].round(2),
     f"{ma_window}M 均線 ({long_ticker})": df_bt["Indicator_MA"].round(2),
     f"{short_ticker} 還原收盤": df_bt[short_ticker].round(2),
 }
-if long_ticker != "TLT" and short_ticker != "TLT":
-    audit_cols["TLT 還原收盤 (Benchmark)"] = df_bt["TLT"].round(2)
+if need_tlt_data and long_ticker != "TLT" and short_ticker != "TLT":
+    audit_cols["TLT 還原收盤 (盤整保守用)"] = df_bt["TLT"].round(2)
 
 audit_cols.update({
     "US2Y (%)": df_bt["US2Y"].round(2),
@@ -539,9 +542,9 @@ audit_cols.update({
     "市場狀態": np.where(df_bt["Is_Trend"], "趨勢盤", "盤整盤") if use_macro_filter else "無濾網",
     "本期實際持有標的 (依上期訊號)": df_bt["Pos"].apply(short_pos_name),
     "本期策略報酬 (%)": (df_bt["Strategy_Ret"] * 100).round(2),
-    "本期 TLT 報酬 (%)": (df_bt["BM_Ret"] * 100).round(2),
+    f"本期 {long_ticker} (BM) 報酬 (%)": (df_bt["BM_Ret"] * 100).round(2),
     "策略累積淨值": df_bt["Strategy_Equity"].round(4),
-    "TLT 累積淨值": df_bt["BM_Equity"].round(4),
+    f"{long_ticker} (BM) 累積淨值": df_bt["BM_Equity"].round(4),
     "本期收盤產生新訊號 (下期適用)": df_bt["Target_Signal"].apply(short_pos_name),
 })
 
